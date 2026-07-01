@@ -576,13 +576,26 @@ el("editBtn").addEventListener("click",function(){
   document.querySelectorAll(".edit").forEach(function(e){e.classList.toggle("show",editMode);});
 });
 
-/* ---------- 시작 ---------- */
-render();
-updateSchedule();
-// 슬롯 자동 인식: 매 분 확인, 새 슬롯 진입 시 자동 갱신 시도
-setInterval(function(){
-  var wasDue=el("dueBadge").classList.contains("show");
-  var due=updateSchedule();
-  if(due && !wasDue){ doRefresh(); }
-},60000);
+/* ---------- data.json 병합 후 시작 (Actions 크론이 자동 수집한 값) ---------- */
+function boot(){
+  render();
+  updateSchedule();
+  // 슬롯 자동 인식: 매 분 확인, 새 슬롯 진입 시 자동 갱신 시도
+  setInterval(function(){
+    var wasDue=el("dueBadge").classList.contains("show");
+    var due=updateSchedule();
+    if(due && !wasDue){ doRefresh(); }
+  },60000);
+}
+(function(){
+  // 같은 폴더의 data.json이 있으면 자동 수집 필드(원/달러·미 국채)를 최신값으로 덮어씀.
+  // 수동 입력 지표(스왑·롤오버·자금·금리·NDF)는 그대로 유지.
+  fetch("data.json",{cache:"no-store"}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+    if(d){
+      ["usdkrw","usdkrw_prev","ust10y","ust2y"].forEach(function(k){ if(d[k]!=null) S[k]=d[k]; });
+      if(d.updatedAt){var t=Date.parse(d.updatedAt); if(!isNaN(t)&&(!S.lastRefresh||t>S.lastRefresh)) S.lastRefresh=t;}
+      store.set(S);
+    }
+  }).catch(function(){}).then(boot);
+})();
 </script>
