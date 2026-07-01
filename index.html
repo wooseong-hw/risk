@@ -260,7 +260,7 @@ var store={
 /* ---------- 시드값 (2026-06 말 기준) ---------- */
 var DEFAULTS={
   usdkrw:1557.5, usdkrw_prev:1547.33,
-  swap_status:"watch", swap_6m:"", swap_1y:"",
+  swap_status:"watch", swap_6m_bid:"", swap_6m_off:"", swap_1y_bid:"", swap_1y_off:"",
   rollover_status:"smooth",
   ust10y:4.40, ust2y:4.07, gd_status:"moderate",
   bond_ytd:11.4, stock_ytd:-94.8,
@@ -299,6 +299,28 @@ function lerpGap(g){ // 금리차 폭(%p) → 기본점수
   return 95;
 }
 
+/* ---------- FX 스왑 자동 계산 (SMB Bid/Offer, 단위 전=0.01원) ---------- */
+function swapExcessScore(x){ // x: 금리차 대비 초과 bp (+초과=공포 프리미엄 / -안쪽=여유)
+  var pts=[[-40,8],[0,20],[25,38],[50,58],[100,78],[200,95]];
+  if(x<=pts[0][0]) return pts[0][1];
+  for(var i=1;i<pts.length;i++){ if(x<=pts[i][0]){ var a=pts[i-1],b=pts[i];
+    return a[1]+(x-a[0])/(b[0]-a[0])*(b[1]-a[1]); } }
+  return 95;
+}
+function swapCalc(){
+  var spot=num(S.usdkrw)||1550;
+  var base=Math.abs(Math.round((num(S.fed_upper)-num(S.bok_base))*100)); // 금리차 기준선(bp, 양수)
+  function midJeon(bid,off){ var b=(bid===""||bid==null)?null:num(bid), o=(off===""||off==null)?null:num(off);
+    return (b===null||o===null)?null:(b+o)/2; }
+  function annBp(mj,months){ return mj===null?null:((mj/100)/spot)*(12/months)*10000; }
+  var m6=midJeon(S.swap_6m_bid,S.swap_6m_off), m1=midJeon(S.swap_1y_bid,S.swap_1y_off);
+  var a6=annBp(m6,6), a1=annBp(m1,12);
+  var ann=(a1!==null)?a1:a6, have=(ann!==null), excess=null, score=null;
+  if(have){ excess=Math.abs(ann)-base; score=swapExcessScore(excess); }
+  return {have:have,base:base,ann:ann,excess:excess,score:score,
+    won6:(m6===null?null:m6/100), won1:(m1===null?null:m1/100)};
+}
+
 /* ---------- 지표 정의 ---------- */
 var INDICATORS=[
   {
@@ -306,29 +328,40 @@ var INDICATORS=[
     ref:{t:"서울외국환중개",u:"http://www.smbs.biz/"},
     why:"수혈망의 핵심. 마이너스 폭이 한미 <b>금리차로 설명되는 범위</b>를 넘어 깊어지면 달러 부족의 비명. 6개월·1년물을 본다.",
     render:function(){
-      var base=-(Math.round((num(S.fed_upper)-num(S.bok_base))*100)); // 1년 기준선(bp)
-      var v6=S.swap_6m===""?null:num(S.swap_6m), v1=S.swap_1y===""?null:num(S.swap_1y);
+      var c=swapCalc();
+      if(c.have){
+        var annTxt=(c.ann>=0?"+":"")+Math.round(c.ann)+"bp";
+        var verdict=c.excess>0?("기준선 초과 +"+Math.round(c.excess)+"bp"):("기준선 안쪽 "+Math.round(-c.excess)+"bp");
+        var parts=[];
+        if(c.won6!==null) parts.push("6M "+c.won6.toFixed(1)+"원");
+        if(c.won1!==null) parts.push("1Y "+c.won1.toFixed(1)+"원");
+        return {
+          metrics:[
+            {val:annTxt,cls:(c.excess>0?"down":"up"),lbl:"스왑 환산(연율)"},
+            {val:"-"+c.base+"bp",cls:"",lbl:"금리차 기준선"}
+          ],
+          status:parts.join(" · ")+' · <span class="tag">'+verdict+"</span>"
+        };
+      }
       var status={normal:"금리차 범위 내",watch:"소폭 초과",caution:"뚜렷이 확대",alert:"급격 확대",crisis:"경색"}[S.swap_status];
-      var val6=v6===null?"입력":(v6+"bp"), val1=v1===null?"입력":(v1+"bp");
       return {
         metrics:[
-          {val:val6,cls:"",lbl:"6M 스왑P"},
-          {val:val1,cls:"",lbl:"1Y 스왑P"}
+          {val:"입력",cls:"",lbl:"6M Bid/Offer"},
+          {val:"입력",cls:"",lbl:"1Y Bid/Offer"}
         ],
-        status:'상태 <span class="tag">'+status+"</span> · 1Y 기준선 ≈ "+base+"bp"
+        status:'상태 <span class="tag">'+status+'</span> · SMB 표(전) 입력 시 자동 계산'
       };
     },
     score:function(){
-      var s=M_SWAP[S.swap_status];
-      var base=-(Math.round((num(S.fed_upper)-num(S.bok_base))*100));
-      if(S.swap_1y!==""){ var excess=Math.max(0,(-num(S.swap_1y))-(-base));
-        var es=stepDown(-excess,[[0,10],[-25,35],[-50,60],[-100,85],[-150,98]]); s=Math.max(s,es);}
-      return s;
+      var c=swapCalc();
+      return c.have?c.score:M_SWAP[S.swap_status];
     },
     edit:[
-      {t:"select",k:"swap_status",label:"스왑 상태",opts:[["normal","금리차 범위 내(정상)"],["watch","소폭 초과(관심)"],["caution","뚜렷이 확대(주의)"],["alert","급격 확대(경계)"],["crisis","경색(위기)"]]},
-      {t:"num",k:"swap_6m",label:"6개월 스왑P (bp, 선택)",ph:"예 -58"},
-      {t:"num",k:"swap_1y",label:"1년 스왑P (bp, 선택)",ph:"예 -132"}
+      {t:"num",k:"swap_6m_bid",label:"6M Bid (전 · SMB 표 그대로)",ph:"예 -1150"},
+      {t:"num",k:"swap_6m_off",label:"6M Offer (전)",ph:"예 -350"},
+      {t:"num",k:"swap_1y_bid",label:"1Y Bid (전)",ph:"예 -2300"},
+      {t:"num",k:"swap_1y_off",label:"1Y Offer (전)",ph:"예 -700"},
+      {t:"select",k:"swap_status",label:"상태 (수동 · 입력 없을 때만)",opts:[["normal","금리차 범위 내(정상)"],["watch","소폭 초과(관심)"],["caution","뚜렷이 확대(주의)"],["alert","급격 확대(경계)"],["crisis","경색(위기)"]]}
     ]
   },
   {
